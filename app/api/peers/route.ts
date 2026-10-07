@@ -12,7 +12,7 @@ const activePeers = new Map<string, Peer>();
 function cleanupStalePeers() {
     const now = Date.now();
     for (const [id, peer] of activePeers.entries()) {
-        if (now - peer.lastSeen > 15_000) {
+        if (now - peer.lastSeen > 6_000) {
             activePeers.delete(id);
         }
     }
@@ -33,7 +33,13 @@ function getClientIp(req: NextRequest): string {
 
 export async function POST(req: NextRequest) {
     try {
-        const { id, name } = await req.json();
+        const body = await req.json();
+
+        if (body.action === "leave" && body.id) {
+            activePeers.delete(body.id);
+            return NextResponse.json({ ok: true });
+        }
+        const { id, name } = body;
 
         if (!id || !name) {
             return NextResponse.json({ error: "Missing id or name" }, { status: 400 });
@@ -54,11 +60,11 @@ export async function POST(req: NextRequest) {
             .map(({ id, name }) => ({ id, name }));
 
         return NextResponse.json({ peers: peersOnSameNetwork });
-    }
-    catch {
+    } catch {
         return NextResponse.json({ error: "Invalid Request" }, { status: 400 });
     }
 }
+
 
 export async function DELETE(req: NextRequest) {
     try {

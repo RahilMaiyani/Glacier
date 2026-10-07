@@ -1,5 +1,5 @@
 export const CHUNK_SIZE = 64 * 1024; // 64 KB per chunk
-const MAX_BUFFER = 16 * 1024 * 1024; // 16 MB buffer safety threshold
+const MAX_BUFFER = 1024 * 1024; // 1 MB buffer safety threshold
 
 export interface FileHeader {
     type: "header";
@@ -33,7 +33,7 @@ export async function sendFile(
     };
     channel.send(JSON.stringify(header));
 
-    channel.bufferedAmountLowThreshold = 4 * 1024 * 1024; // 4 MB resume point
+    channel.bufferedAmountLowThreshold = 256 * 1024; // 256 KB resume point
 
     let offset = 0;
     let chunkIndex = 0;
