@@ -1,4 +1,8 @@
 import { NextResponse, NextRequest } from "next/server";
+import { Redis } from "@upstash/redis";
+
+const hasRedis = !!(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN);
+const redis = hasRedis ? Redis.fromEnv() : null;
 
 export interface SignalMessage {
     senderId: string;
@@ -7,21 +11,7 @@ export interface SignalMessage {
     data: any;
     timestamp: number;
 }
-
-const signalMailBox = new Map<string, SignalMessage[]>();
-
-function cleanupOldSignals() {
-    const cutoff = Date.now() - 30_000;
-    for (const [targetId, messages] of signalMailBox.entries()) {
-        const valid = messages.filter((m) => m.timestamp > cutoff);
-        if (valid.length === 0) {
-            signalMailBox.delete(targetId);
-        }
-        else {
-            signalMailBox.set(targetId, valid);
-        }
-    }
-}
+const localMailBox = new Map<string, SignalMessage[]>();
 
 export async function POST(req: NextRequest) {
     try {
@@ -31,17 +21,30 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "Missing required fields." }, { status: 400 });
         }
 
-        cleanupOldSignals();
-
-        const existing = signalMailBox.get(targetId) || [];
-        existing.push({
+        const message: SignalMessage = {
             senderId,
             targetId,
             type,
             data,
             timestamp: Date.now(),
-        });
-        signalMailBox.set(targetId, existing);
+        };
+
+        if (redis) {
+            await redis.rpush(`signal:${targetId}`, JSON.stringify(message));
+            await redis.expire(`signal:${targetId}`, 30);
+        }
+        else {
+            const existing = localMailBox.get(targetId) || [];
+            existing.push({
+                senderId,
+                targetId,
+                type,
+                data,
+                timestamp: Date.now(),
+            });
+            localMailBox.set(targetId, existing);
+
+        }
 
         return NextResponse.json({ ok: true });
     }
@@ -58,10 +61,17 @@ export async function GET(req: NextRequest) {
             return NextResponse.json({ error: "peerId query param is required." }, { status: 400 });
         }
 
-        cleanupOldSignals();
+        let messages: SignalMessage[] = [];
 
-        const messages = signalMailBox.get(peerId) || [];
-        signalMailBox.delete(peerId);
+
+        if (redis) {
+            const raw = await redis.lrange<string | SignalMessage>(`signal:${peerId}`, 0, -1);
+            await redis.del(`signal:${peerId}`);
+
+            messages = (raw || []).map((m) => (typeof m === 'string' ? JSON.parse(m) : m));
+            messages = localMailBox.get(peerId) || [];
+            localMailBox.delete(peerId);
+        }
 
         return NextResponse.json({ messages });
     }
