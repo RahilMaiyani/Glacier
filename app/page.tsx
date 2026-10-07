@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useId } from "react";
+import { useState, useEffect, useRef } from "react";
 import { WebRTCManager } from "@/lib/webrtc";
 import { sendFile, FileReceiver, TransferProgress, FileHeader } from "@/lib/transfer";
 import { wakeLockManager } from "@/lib/wakelock";
@@ -10,19 +10,45 @@ interface DiscoveredPeer {
   name: string;
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
+
+function formatETA(seconds: number): string {
+  if (!isFinite(seconds) || seconds <= 0) return "--:--";
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins < 10 ? "0" : ""}${mins}:${secs < 10 ? "0" : ""}${secs}`;
+}
+
+function getFileIcon(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase();
+  if (["mp4", "mkv", "mov", "avi"].includes(ext || "")) return "🎬";
+  if (["mp3", "wav", "flac", "m4a"].includes(ext || "")) return "🎵";
+  if (["zip", "rar", "7z", "tar", "gz"].includes(ext || "")) return "📦";
+  if (["png", "jpg", "jpeg", "webp", "gif"].includes(ext || "")) return "🖼️";
+  if (["pdf", "docx", "txt", "md"].includes(ext || "")) return "📄";
+  return "🧊";
+}
+
 export default function GlacierApp() {
   const [localPeerId, setLocalPeerId] = useState<string>("");
   const [deviceName, setDeviceName] = useState<string>("");
 
   const [nearbyPeers, setNearbyPeers] = useState<DiscoveredPeer[]>([]);
   const [selectedPeer, setSelectedPeer] = useState<DiscoveredPeer | null>(null);
-  const [connectionStatus, setConnectionStatus] = useState<string>("Scanning Wi-Fi...");
 
   const [isTransferring, setIsTransferring] = useState<boolean>(false);
-  const [transferRole, setTransferRole] = useState<'glacier' | 'sea' | null>(null);
+  const [transferRole, setTransferRole] = useState<"glacier" | "sea" | null>(null);
   const [progress, setProgress] = useState<TransferProgress | null>(null);
   const [currentFileName, setCurrentFileName] = useState<string>("");
+  const [currentFileSize, setCurrentFileSize] = useState<number>(0);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [isCompleted, setIsCompleted] = useState<boolean>(false);
 
   const rtcRef = useRef<WebRTCManager | null>(null);
   const receiverRef = useRef<FileReceiver | null>(null);
@@ -35,10 +61,8 @@ export default function GlacierApp() {
 
     if (!id || !name) {
       id = "peer_" + Math.random().toString(36).substring(2, 9);
-      const platform =
-        typeof navigator !== "undefined" && /iPhone|iPad|Android/i.test(navigator.userAgent)
-          ? "Mobile Fjord"
-          : "Desktop Glacier";
+      const isMobile = typeof navigator !== "undefined" && /iPhone|iPad|Android/i.test(navigator.userAgent);
+      const platform = isMobile ? "Mobile Fjord" : "Desktop Glacier";
       name = `${platform} (${Math.floor(100 + Math.random() * 900)})`;
 
       sessionStorage.setItem("glacier_peer_id", id);
@@ -54,53 +78,47 @@ export default function GlacierApp() {
       }
     };
     window.addEventListener("beforeunload", handleUnload);
-
-    return () => {
-      window.removeEventListener("beforeunload", handleUnload);
-    };
+    return () => window.removeEventListener("beforeunload", handleUnload);
   }, []);
-
 
   useEffect(() => {
     if (!localPeerId) return;
 
     const rtc = new WebRTCManager(localPeerId, {
-      onConnectionStateChange: (state) => {
-        setConnectionStatus(state === 'connected' ? 'Current Flowing (Connected)' : state);
-      },
       onMessageReceived: async (data) => {
-        if (typeof data === 'string') {
+        if (typeof data === "string") {
           try {
             const parsed = JSON.parse(data);
-            if (parsed.type === 'header') {
-              setTransferRole('sea');
+            if (parsed.type === "header") {
+              setTransferRole("sea");
               setIsTransferring(true);
+              setIsCompleted(false);
+              setDownloadUrl(null);
               setCurrentFileName(parsed.name);
+              setCurrentFileSize(parsed.size);
               wakeLockRef.current.request();
 
               const receiver = new FileReceiver(
                 (p) => setProgress(p),
                 (url) => {
                   setIsTransferring(false);
+                  setIsCompleted(true);
                   wakeLockRef.current.release();
                   if (url) setDownloadUrl(url);
                 }
               );
               receiverRef.current = receiver;
               await receiver.prepareDisk(parsed as FileHeader);
-            }
-            else if (parsed.type === 'complete') {
+            } else if (parsed.type === "complete") {
               await receiverRef.current?.finish();
             }
+          } catch (e) {
+            console.error("Control message error:", e);
           }
-          catch (e) {
-            console.error("Control message error: ", e);
-          }
-        }
-        else if (data instanceof ArrayBuffer) {
+        } else if (data instanceof ArrayBuffer) {
           await receiverRef.current?.writeChunk(data);
         }
-      }
+      },
     });
 
     rtcRef.current = rtc;
@@ -117,7 +135,7 @@ export default function GlacierApp() {
       } catch (err) {
         console.error("Heartbeat error:", err);
       }
-    }, 4000);
+    }, 3500);
 
     const signalTimer = setInterval(async () => {
       try {
@@ -137,7 +155,7 @@ export default function GlacierApp() {
       } catch (err) {
         console.error("Signal poll error:", err);
       }
-    }, 1500);
+    }, 1200);
 
     return () => {
       clearInterval(heartbeatTimer);
@@ -149,87 +167,129 @@ export default function GlacierApp() {
         body: JSON.stringify({ id: localPeerId }),
       }).catch(() => { });
     };
-
   }, [localPeerId, deviceName]);
 
   const handleFileSelected = async (file: File) => {
     if (!selectedPeer || !rtcRef.current) return;
 
-    setTransferRole('glacier');
+    setTransferRole("glacier");
     setIsTransferring(true);
+    setIsCompleted(false);
+    setDownloadUrl(null);
     setCurrentFileName(file.name);
+    setCurrentFileSize(file.size);
     await wakeLockRef.current.request();
 
     try {
       let channel = rtcRef.current.getDataChannel();
-      if (!channel || channel.readyState !== 'open') {
+      if (!channel || channel.readyState !== "open") {
         await rtcRef.current.createOffer(selectedPeer.id);
         await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => reject(new Error("Connection time out")), 10000);
-
+          const timeout = setTimeout(() => reject(new Error("Connection timed out")), 12000);
           const check = setInterval(() => {
             const ch = rtcRef.current?.getDataChannel();
-            if (ch && ch.readyState === 'open') {
+            if (ch && ch.readyState === "open") {
               clearInterval(check);
               clearTimeout(timeout);
               resolve();
             }
-          }, 300);
+          }, 250);
         });
         channel = rtcRef.current.getDataChannel();
       }
 
       if (channel) {
         await sendFile(file, channel, (p) => setProgress(p));
+        setIsCompleted(true);
       }
-
     } catch (err) {
       console.error("Transfer failed:", err);
-      alert("Tranfer interrputed or timed out.");
-    }
-    finally {
+      alert("Transfer was interrupted.");
+    } finally {
       setIsTransferring(false);
       wakeLockRef.current.release();
     }
   };
+
+  const handleMobileSave = async () => {
+    if (!downloadUrl) return;
+
+    if (typeof navigator !== "undefined" && navigator.share) {
+      try {
+        const response = await fetch(downloadUrl);
+        const blob = await response.blob();
+        const file = new File([blob], currentFileName, { type: blob.type });
+
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            files: [file],
+            title: currentFileName,
+          });
+          return;
+        }
+      } catch (err) {
+        console.warn("Native share dismissed or unsupported, falling back to download link", err);
+      }
+    }
+
+    const a = document.createElement("a");
+    a.href = downloadUrl;
+    a.download = currentFileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  // Calculate live ETA
+  const remainingBytes = currentFileSize - (progress?.bytesTransferred || 0);
+  const etaSeconds = progress?.speedMBs && progress.speedMBs > 0
+    ? remainingBytes / (progress.speedMBs * 1024 * 1024)
+    : 0;
+
   return (
-    <main className="min-h-screen bg-[#030712] text-white flex flex-col items-center p-6 relative overflow-hidden font-sans">
-      {/* ─── Background / OGL Container Hook ─────────────────────────── */}
-      <div id="glacier-bg" className="absolute inset-0 pointer-events-none opacity-40">
-        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-96 h-96 bg-cyan-600/20 rounded-full blur-[120px]" />
+    <main className="min-h-screen bg-[#030712] text-slate-100 flex flex-col items-center justify-between p-4 sm:p-6 relative overflow-hidden font-sans select-none">
+
+      <div id="glacier-bg" className="absolute inset-0 pointer-events-none">
+        <div className="absolute top-1/6 left-1/2 -translate-x-1/2 w-80 sm:w-96 h-80 sm:h-96 bg-cyan-600/15 rounded-full blur-[140px]" />
+        <div className="absolute bottom-1/4 left-1/3 w-64 h-64 bg-teal-600/10 rounded-full blur-[120px]" />
       </div>
-      {/* ─── Header Bar ─────────────────────────────────────────────── */}
-      <header className="w-full max-w-2xl flex items-center justify-between py-4 border-b border-cyan-900/40 relative z-10">
+
+      <header className="w-full max-w-lg flex items-center justify-between py-3 border-b border-cyan-900/30 relative z-10">
         <div className="flex items-center gap-2.5">
-          <span className="text-2xl">🧊</span>
+          <span className="text-2xl drop-shadow-[0_0_12px_rgba(56,189,248,0.5)]">🧊</span>
           <div>
-            <h1 className="text-lg font-bold tracking-wide text-cyan-50">GLACIER</h1>
-            <p className="text-xs text-cyan-400/80">Local Wi-Fi P2P Drift</p>
+            <h1 className="text-base font-bold tracking-wider text-cyan-50">GLACIER</h1>
+            <p className="text-[10px] text-cyan-400/80 font-mono">Same Wi-Fi P2P Drift</p>
           </div>
         </div>
-        <div className="flex items-center gap-2 bg-cyan-950/40 border border-cyan-800/40 px-3 py-1.5 rounded-full text-xs text-cyan-300">
+
+        <div className="flex items-center gap-2 bg-slate-900/80 border border-cyan-800/40 px-3 py-1.5 rounded-full text-xs text-cyan-300 backdrop-blur-md shadow-inner">
           <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-          <span>{deviceName || "Initializing..."}</span>
+          <span className="max-w-[140px] truncate font-medium">{deviceName || "Locating..."}</span>
         </div>
       </header>
-      {/* ─── Main Content ───────────────────────────────────────────── */}
-      <div className="w-full max-w-2xl flex-1 flex flex-col justify-center gap-8 py-10 relative z-10">
 
-        {/* Radar: Discovered Peers */}
-        <section className="bg-slate-900/60 backdrop-blur-xl border border-cyan-900/40 rounded-3xl p-6 flex flex-col items-center gap-4 text-center">
-          <div className="text-xs font-mono tracking-widest uppercase text-cyan-400/70">
-            Same Wi-Fi Fjord Radar
+      <div className="w-full max-w-lg flex-1 flex flex-col justify-center gap-6 py-6 relative z-10">
+
+        {/* Radar Card */}
+        <section className="bg-slate-900/60 backdrop-blur-2xl border border-cyan-900/40 rounded-3xl p-5 sm:p-6 shadow-2xl flex flex-col items-center gap-4 text-center">
+          <div className="flex items-center justify-between w-full text-[11px] font-mono tracking-widest text-cyan-400/70 border-b border-cyan-950/80 pb-3">
+            <span>NEARBY SEAS & FJORDS</span>
+            <span className="text-cyan-500 font-semibold">{nearbyPeers.length} Found</span>
           </div>
+
           {nearbyPeers.length === 0 ? (
-            <div className="py-8 flex flex-col items-center gap-2 text-slate-400">
-              <div className="w-12 h-12 rounded-full border border-dashed border-cyan-800/60 flex items-center justify-center animate-spin">
-                🌊
+            <div className="py-10 flex flex-col items-center gap-3 text-slate-400">
+              <div className="relative w-14 h-14 rounded-full border border-dashed border-cyan-700/60 flex items-center justify-center animate-spin">
+                <span className="text-xl">🌊</span>
               </div>
-              <p className="text-sm">Scanning for other devices on your Wi-Fi...</p>
-              <p className="text-xs text-slate-500">Open Glacier on your phone or laptop to connect.</p>
+              <p className="text-sm font-medium text-slate-300">Listening on your Wi-Fi router...</p>
+              <p className="text-xs text-slate-500 max-w-xs leading-relaxed">
+                Open Glacier on your phone or PC on the same Wi-Fi to calve and drift files instantly.
+              </p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full mt-2">
+            <div className="grid grid-cols-1 gap-2.5 w-full mt-1">
               {nearbyPeers.map((peer) => (
                 <button
                   key={peer.id}
@@ -237,23 +297,27 @@ export default function GlacierApp() {
                     setSelectedPeer(peer);
                     fileInputRef.current?.click();
                   }}
-                  className={`p-4 rounded-2xl border text-left flex items-center gap-3.5 transition cursor-pointer ${selectedPeer?.id === peer.id
-                    ? "bg-cyan-950/60 border-cyan-400 text-cyan-50"
-                    : "bg-slate-950/40 border-cyan-900/40 hover:border-cyan-700 text-slate-200"
+                  className={`p-4 rounded-2xl border text-left flex items-center gap-3.5 transition active:scale-[0.98] cursor-pointer ${selectedPeer?.id === peer.id
+                    ? "bg-cyan-950/70 border-cyan-400 shadow-[0_0_20px_rgba(34,211,238,0.2)]"
+                    : "bg-slate-950/50 border-cyan-900/30 hover:border-cyan-700 text-slate-200"
                     }`}
                 >
-                  <div className="w-10 h-10 rounded-xl bg-cyan-900/40 border border-cyan-800/60 flex items-center justify-center text-lg">
-                    📱
+                  <div className="w-11 h-11 rounded-xl bg-cyan-950/60 border border-cyan-800/60 flex items-center justify-center text-xl shrink-0">
+                    {peer.name.includes("Mobile") ? "📱" : "💻"}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{peer.name}</p>
-                    <p className="text-xs text-cyan-400/70">Tap to calve & send</p>
+                    <p className="text-sm font-semibold truncate text-cyan-50">{peer.name}</p>
+                    <p className="text-xs text-cyan-400/80">Tap to calve & send iceberg</p>
                   </div>
+                  <span className="text-xs text-cyan-400 font-mono bg-cyan-950/80 border border-cyan-800/50 px-2.5 py-1 rounded-lg">
+                    Send
+                  </span>
                 </button>
               ))}
             </div>
           )}
         </section>
+
         {/* Hidden File Picker */}
         <input
           ref={fileInputRef}
@@ -264,51 +328,100 @@ export default function GlacierApp() {
             if (file) handleFileSelected(file);
           }}
         />
-        {/* Active Transfer / Glacial Drift Card */}
+
+        {/* Active Transfer Card (The Glacial Drift) */}
         {isTransferring && (
-          <section className="bg-cyan-950/40 backdrop-blur-xl border border-cyan-500/30 rounded-3xl p-6 flex flex-col gap-4">
+          <section className="bg-slate-900/80 backdrop-blur-2xl border border-cyan-500/40 rounded-3xl p-5 sm:p-6 shadow-[0_0_35px_rgba(6,182,212,0.15)] flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <span className="text-cyan-400 animate-spin">❄️</span>
-                <span className="text-sm font-semibold text-cyan-100">
+                <span className="animate-spin text-base">❄️</span>
+                <span className="text-xs sm:text-sm font-bold text-cyan-100 uppercase tracking-wide">
                   {transferRole === "glacier" ? "Calving Iceberg to Sea" : "Receiving in Fjord"}
                 </span>
               </div>
-              <span className="text-xs font-mono text-cyan-400 bg-cyan-900/50 px-2 py-0.5 rounded-md">
-                Permafrost Active (Screen Awake)
+              <span className="text-[10px] font-mono text-cyan-300 bg-cyan-950/80 border border-cyan-700/60 px-2 py-0.5 rounded-full flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                Permafrost Active
               </span>
             </div>
-            <div className="text-xs text-slate-300 font-mono truncate">
-              {currentFileName}
+
+            {/* File Info */}
+            <div className="flex items-center gap-3 bg-slate-950/60 p-3 rounded-2xl border border-cyan-900/40">
+              <span className="text-2xl">{getFileIcon(currentFileName)}</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs sm:text-sm font-semibold truncate text-cyan-50">{currentFileName}</p>
+                <p className="text-[11px] font-mono text-cyan-400/70">
+                  {formatBytes(progress?.bytesTransferred || 0)} / {formatBytes(currentFileSize)}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-sm font-mono font-bold text-cyan-300">{progress?.percentage || 0}%</p>
+                <p className="text-[10px] font-mono text-slate-400">{formatETA(etaSeconds)} left</p>
+              </div>
             </div>
-            {/* Ice Progress Bar */}
-            <div className="w-full bg-slate-950/80 rounded-full h-3 overflow-hidden border border-cyan-900/60">
+
+            {/* Progress Bar */}
+            <div className="w-full bg-slate-950 rounded-full h-3.5 overflow-hidden p-0.5 border border-cyan-800/60 shadow-inner">
               <div
-                className="bg-gradient-to-r from-cyan-500 to-teal-400 h-full transition-all duration-300"
+                className="bg-gradient-to-r from-cyan-500 via-teal-400 to-emerald-400 h-full rounded-full transition-all duration-200 shadow-[0_0_12px_rgba(45,212,191,0.7)]"
                 style={{ width: `${progress?.percentage || 0}%` }}
               />
             </div>
-            {/* Live Telemetry */}
-            <div className="flex items-center justify-between text-xs font-mono text-cyan-300/80">
-              <span>{progress?.percentage || 0}% Complete</span>
-              <span>{progress?.speedMBs || 0} MB/s</span>
+
+            {/* Live Telemetry Meter */}
+            <div className="flex items-center justify-between text-[11px] font-mono text-cyan-300/80 pt-1">
+              <span className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+                Flow Speed: <strong className="text-cyan-200">{progress?.speedMBs || 0} MB/s</strong>
+              </span>
+              <span>Encrypted Wi-Fi P2P</span>
             </div>
           </section>
         )}
-        {/* Mobile Download Ready Card */}
-        {downloadUrl && (
-          <div className="bg-emerald-950/40 border border-emerald-500/40 rounded-2xl p-4 flex items-center justify-between">
-            <span className="text-xs text-emerald-200">Iceberg safely anchored in device storage!</span>
-            <a
-              href={downloadUrl}
-              download={currentFileName}
-              className="text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 text-black px-3 py-1.5 rounded-lg transition"
-            >
-              Save to Files
-            </a>
-          </div>
+
+        {/* Transfer Complete / Save Actions */}
+        {isCompleted && (
+          <section className="bg-emerald-950/40 backdrop-blur-xl border border-emerald-500/40 rounded-3xl p-5 shadow-2xl flex flex-col gap-3 animate-in fade-in duration-300">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-full bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center text-emerald-300 text-sm">
+                ✓
+              </div>
+              <div className="flex-1">
+                <p className="text-xs sm:text-sm font-bold text-emerald-100">Iceberg Anchored Successfully!</p>
+                <p className="text-[11px] text-emerald-300/80 font-mono">
+                  {currentFileName} ({formatBytes(currentFileSize)})
+                </p>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="pt-2">
+              {downloadUrl ? (
+                // Mobile Action: Opens iOS / Android Native Share Sheet
+                <button
+                  onClick={handleMobileSave}
+                  className="w-full py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs sm:text-sm transition shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 cursor-pointer active:scale-[0.99]"
+                >
+                  <span>📲</span>
+                  <span>Save to Files / Share</span>
+                </button>
+              ) : (
+                // Desktop Action: Confirmation notice
+                <div className="p-2.5 bg-emerald-950/60 border border-emerald-600/30 rounded-xl text-center text-xs text-emerald-200 font-mono">
+                  ✨ Safely written directly to your chosen hard drive folder
+                </div>
+              )}
+            </div>
+          </section>
         )}
+
       </div>
+
+      <footer className="w-full max-w-lg py-2 flex items-center justify-between text-[10px] font-mono text-cyan-700 relative z-10 border-t border-cyan-950">
+        <span>Glacier Engine • Zero Cloud Storage</span>
+        <span>100% P2P LAN</span>
+      </footer>
+
     </main>
   );
 }
