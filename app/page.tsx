@@ -42,6 +42,8 @@ export default function GlacierApp() {
   const [nearbyPeers, setNearbyPeers] = useState<DiscoveredPeer[]>([]);
   const [selectedPeer, setSelectedPeer] = useState<DiscoveredPeer | null>(null);
 
+  const [connectedPeer, setConnectedPeer] = useState<DiscoveredPeer | null>(null);
+
   const [isTransferring, setIsTransferring] = useState<boolean>(false);
   const [transferRole, setTransferRole] = useState<"glacier" | "sea" | null>(null);
   const [progress, setProgress] = useState<TransferProgress | null>(null);
@@ -54,6 +56,13 @@ export default function GlacierApp() {
   const receiverRef = useRef<FileReceiver | null>(null);
   const wakeLockRef = useRef<wakeLockManager>(new wakeLockManager());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+
+  const isTransferringRef = useRef(isTransferring);
+  isTransferringRef.current = isTransferring;
+  const connectedPeerRef = useRef(connectedPeer);
+  connectedPeerRef.current = connectedPeer;
+
 
   useEffect(() => {
     let id = sessionStorage.getItem("glacier_peer_id");
@@ -85,6 +94,14 @@ export default function GlacierApp() {
     if (!localPeerId) return;
 
     const rtc = new WebRTCManager(localPeerId, {
+      onConnectionStateChange: (state) => {
+        if (state === 'connected') {
+          setConnectedPeer(selectedPeer);
+        }
+        else if (state === 'disconnected' || state === 'failed') {
+          setConnectedPeer(null);
+        }
+      },
       onMessageReceived: async (data) => {
         if (typeof data === "string") {
           try {
@@ -124,6 +141,7 @@ export default function GlacierApp() {
     rtcRef.current = rtc;
 
     const heartbeatTimer = setInterval(async () => {
+      if (connectedPeerRef.current || isTransferringRef.current) return;
       try {
         const res = await fetch("/api/peers", {
           method: "POST",
@@ -275,13 +293,52 @@ export default function GlacierApp() {
       <div className="w-full max-w-lg flex-1 flex flex-col justify-center gap-6 py-6 relative z-10">
 
         {/* Radar Card */}
+        {/* Radar / Active Connection Section */}
         <section className="bg-slate-900/60 backdrop-blur-2xl border border-cyan-900/40 rounded-3xl p-5 sm:p-6 shadow-2xl flex flex-col items-center gap-4 text-center">
           <div className="flex items-center justify-between w-full text-[11px] font-mono tracking-widest text-cyan-400/70 border-b border-cyan-950/80 pb-3">
-            <span>NEARBY SEAS & FJORDS</span>
-            <span className="text-cyan-500 font-semibold">{nearbyPeers.length} Found</span>
+            <span>{connectedPeer ? "ACTIVE CONNECTION" : "NEARBY SEAS & FJORDS"}</span>
+            <span className={connectedPeer ? "text-emerald-400 font-semibold" : "text-cyan-500 font-semibold"}>
+              {connectedPeer ? "Channel Locked" : `${nearbyPeers.length} Found`}
+            </span>
           </div>
 
-          {nearbyPeers.length === 0 ? (
+          {/* 1. LOCKED PEER VIEW (When connected) */}
+          {connectedPeer ? (
+            <div className="w-full flex items-center justify-between p-4 bg-cyan-950/70 border border-cyan-400/80 rounded-2xl shadow-[0_0_25px_rgba(6,182,212,0.25)] animate-in fade-in zoom-in-95 duration-200">
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-12 h-12 rounded-xl bg-cyan-900/60 border border-cyan-700/80 flex items-center justify-center text-2xl shrink-0">
+                  {connectedPeer.name.includes("Mobile") ? "📱" : "💻"}
+                </div>
+                <div className="text-left min-w-0">
+                  <p className="text-sm font-bold text-cyan-50 truncate">{connectedPeer.name}</p>
+                  <p className="text-[11px] text-emerald-400 font-mono flex items-center gap-1.5 mt-0.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    Direct Wi-Fi Channel Locked
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="px-4 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold rounded-xl transition cursor-pointer shadow-md active:scale-95"
+                >
+                  Send Iceberg
+                </button>
+                <button
+                  onClick={() => {
+                    rtcRef.current?.close();
+                    setConnectedPeer(null);
+                  }}
+                  className="p-2.5 bg-slate-900 hover:bg-slate-800 border border-cyan-900/60 text-slate-400 hover:text-white rounded-xl text-xs transition cursor-pointer"
+                  title="Disconnect and resume radar"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          ) : nearbyPeers.length === 0 ? (
+            /* 2. SCANNING VIEW (Radar active, waiting for peers) */
             <div className="py-10 flex flex-col items-center gap-3 text-slate-400">
               <div className="relative w-14 h-14 rounded-full border border-dashed border-cyan-700/60 flex items-center justify-center animate-spin">
                 <span className="text-xl">🌊</span>
@@ -292,6 +349,7 @@ export default function GlacierApp() {
               </p>
             </div>
           ) : (
+            /* 3. PEER LIST (Select someone to send to) */
             <div className="grid grid-cols-1 gap-2.5 w-full mt-1">
               {nearbyPeers.map((peer) => (
                 <button
@@ -320,6 +378,7 @@ export default function GlacierApp() {
             </div>
           )}
         </section>
+
 
         {/* Hidden File Picker */}
         <input
