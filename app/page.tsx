@@ -211,10 +211,12 @@ export default function GlacierApp() {
     }
   };
 
-  const handleMobileSave = async () => {
+  const handleSaveFile = async () => {
     if (!downloadUrl) return;
 
-    if (typeof navigator !== "undefined" && navigator.share) {
+    const isMobile = typeof navigator !== "undefined" && /iPhone|iPad|Android/i.test(navigator.userAgent);
+
+    if (isMobile && navigator.share) {
       try {
         const response = await fetch(downloadUrl);
         const blob = await response.blob();
@@ -228,7 +230,7 @@ export default function GlacierApp() {
           return;
         }
       } catch (err) {
-        console.warn("Native share dismissed or unsupported, falling back to download link", err);
+        console.warn("Share sheet dismissed, falling back to download", err);
       }
     }
 
@@ -239,6 +241,7 @@ export default function GlacierApp() {
     a.click();
     document.body.removeChild(a);
   };
+
 
   // Calculate live ETA
   const remainingBytes = currentFileSize - (progress?.bytesTransferred || 0);
@@ -394,24 +397,17 @@ export default function GlacierApp() {
               </div>
             </div>
 
-            {/* Action Buttons */}
-            <div className="pt-2">
-              {downloadUrl ? (
-                // Mobile Action: Opens iOS / Android Native Share Sheet
-                <button
-                  onClick={handleMobileSave}
-                  className="w-full py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs sm:text-sm transition shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 cursor-pointer active:scale-[0.99]"
-                >
-                  <span>📲</span>
-                  <span>Save to Files / Share</span>
-                </button>
-              ) : (
-                // Desktop Action: Confirmation notice
-                <div className="p-2.5 bg-emerald-950/60 border border-emerald-600/30 rounded-xl text-center text-xs text-emerald-200 font-mono">
-                  ✨ Safely written directly to your chosen hard drive folder
-                </div>
-              )}
-            </div>
+            {/* Update the button in app/page.tsx */}
+            {downloadUrl && (
+              <button
+                onClick={handleSaveFile}
+                className="w-full py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs sm:text-sm transition shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 cursor-pointer active:scale-[0.99]"
+              >
+                <span>💾</span>
+                <span>Download / Save File</span>
+              </button>
+            )}
+
           </section>
         )}
 

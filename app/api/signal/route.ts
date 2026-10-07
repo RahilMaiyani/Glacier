@@ -53,6 +53,7 @@ export async function POST(req: NextRequest) {
     }
 }
 
+
 export async function GET(req: NextRequest) {
     try {
         const peerId = req.nextUrl.searchParams.get("peerId");
@@ -63,19 +64,17 @@ export async function GET(req: NextRequest) {
 
         let messages: SignalMessage[] = [];
 
-
         if (redis) {
             const raw = await redis.lrange<string | SignalMessage>(`signal:${peerId}`, 0, -1);
             await redis.del(`signal:${peerId}`);
-
-            messages = (raw || []).map((m) => (typeof m === 'string' ? JSON.parse(m) : m));
+            messages = (raw || []).map((m) => (typeof m === "string" ? JSON.parse(m) : m));
+        } else {
             messages = localMailBox.get(peerId) || [];
             localMailBox.delete(peerId);
         }
 
         return NextResponse.json({ messages });
-    }
-    catch {
+    } catch {
         return NextResponse.json({ error: "invalid request" }, { status: 400 });
     }
 }
